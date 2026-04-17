@@ -383,6 +383,7 @@ WATCHLIST = [
 PERMITS_URL = "https://data.cityofnewyork.us/resource/ipu4-2q9a.json"
 FILINGS_URL = "https://data.cityofnewyork.us/resource/ic3t-wcy2.json"
 PLUTO_URL   = "https://data.cityofnewyork.us/resource/64uk-42ks.json"  # MapPLUTO
+CO_URL      = "https://data.cityofnewyork.us/resource/bs8b-p36w.json"  # DOB Certificates of Occupancy
 
 # Set False to skip PLUTO enrichment (faster load, fewer API calls)
 PLUTO_ENABLED = False
@@ -557,6 +558,65 @@ def fetch_filings():
     if DEBUG:
         print(f"  [filings]  {len(records)} raw records")
     return records
+
+
+def fetch_certificates_of_occupancy():
+    """
+    DOB Certificates of Occupancy — recently completed residential buildings in Manhattan.
+    Filters for COs issued in the last 12 months, residential occupancy types.
+    These represent buildings that finished construction and are entering the market.
+    """
+    cutoff = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%dT00:00:00")
+    params = {
+        "$where": (
+            f"borough='Manhattan' "
+            f"AND co_issue_date >= '{cutoff}' "
+            f"AND (occupancy_type LIKE '%RESIDENTIAL%' "
+            f"     OR occupancy_type LIKE '%DWELLING%' "
+            f"     OR occupancy_type LIKE '%APARTMENT%')"
+        ),
+        "$limit": LIMIT,
+        "$order": "co_issue_date DESC",
+    }
+    records = _get(CO_URL, params)
+    if DEBUG:
+        print(f"  [COs]  {len(records)} raw records")
+    return records
+
+
+def parse_co(rec):
+    """Parse one raw Certificate of Occupancy record. Returns normalized dict or None."""
+    house  = (rec.get("house_no") or rec.get("house__") or "").strip()
+    street = (rec.get("street_name") or "").strip()
+    if not house or not street:
+        return None
+    raw_date = rec.get("co_issue_date") or ""
+    owner    = (rec.get("owner_name") or rec.get("applicant_name") or "").strip()
+    zip_code = (rec.get("zip_code") or "").strip()
+    job_num  = (rec.get("job_no") or rec.get("job__") or "").strip()
+    occ_type = (rec.get("occupancy_type") or "").strip()
+    neighborhood = ZIP_TO_NEIGHBORHOOD.get(zip_code, "")
+    # Skip excluded neighborhoods
+    if EXCLUDED_NEIGHBORHOODS and neighborhood:
+        if any(neighborhood.startswith(ex) for ex in EXCLUDED_NEIGHBORHOODS):
+            return None
+    # Skip institutional owners
+    if not _is_private_developer(owner, ""):
+        return None
+    return {
+        "address":        f"{house} {street}",
+        "zip_code":       zip_code,
+        "job_type":       "CO",
+        "building_type":  occ_type,
+        "is_residential": True,
+        "status":         "CERTIFICATE OF OCCUPANCY",
+        "date":           _parse_date(raw_date),
+        "job_number":     job_num,
+        "owner":          owner,
+        "applicant":      "",
+        "source":         "DOB Certificate of Occupancy",
+        "source_link":    "",
+    }
 
 
 # ===========================================================================
@@ -983,6 +1043,7 @@ def get_projects():
     # Fetch from all sources
     raw_permits = fetch_permits()
     raw_filings = fetch_filings()
+    raw_cos     = fetch_certificates_of_occupancy()
 
     total_raw = len(raw_permits) + len(raw_filings)
     if DEBUG:
@@ -998,6 +1059,13 @@ def get_projects():
         p = parse_filing(rec)
         if p:
             events.append(p)
+
+    # Parse CO records separately — they become their own project list
+    co_events = []
+    for rec in raw_cos:
+        p = parse_co(rec)
+        if p:
+            co_events.append(p)
 
     # No date filter — include all records. The API returns the 1000 most
     # recent per endpoint, so recency is already handled by the API ordering.
@@ -1124,7 +1192,56 @@ def get_projects():
         print(f"\n  Returning {len(projects)} projects (score >= {MIN_SCORE})")
         print("=" * 55 + "\n")
 
-    return projects
+    # Build CO projects from certificate of occupancy records
+    co_projects = []
+    co_buckets  = group_by_address(co_events)
+    existing_addresses = {p["address"].upper() for p in projects}
+    for address_key, addr_events in co_buckets.items():
+        if address_key in existing_addresses:
+            continue  # already tracked via permits/filings
+        rep          = addr_events[0]
+        zip_code     = rep.get("zip_code", "")
+        neighborhood = ZIP_TO_NEIGHBORHOOD.get(zip_code, "")
+        dev_name, dev_status, _ = _resolve_developer(rep.get("owner", ""), "")
+        co_projects.append({
+            "address":           address_key,
+            "borough":           "Manhattan",
+            "neighborhood":      neighborhood,
+            "zip_code":          zip_code,
+            "stage":             "completed / CO issued",
+            "launch_stage":      "launched / permitted",
+            "building_type":     rep.get("building_type", ""),
+            "score":             70,
+            "category":          "watch",
+            "explanation":       "Certificate of Occupancy issued — building completed",
+            "developer_name":    dev_name,
+            "developer_status":  dev_status,
+            "developer_url":     "",
+            "developer_email":   "",
+            "developer_phone":   "",
+            "developer_notes":   "",
+            "owner_name":        rep.get("owner", ""),
+            "applicant_name":    "",
+            "latest_event_date": rep.get("date", ""),
+            "job_number":        rep.get("job_number", ""),
+            "num_filings":       len(addr_events),
+            "source_dataset":    "DOB Certificate of Occupancy",
+            "source_link":       "",
+            "watched_developer": "",
+            "is_watchlist":      False,
+            "amenities":         [],
+            "amenity_source":    None,
+            "availability":      "",
+            "price_range":       "",
+            "website":           "",
+            "pluto_found": False, "pluto_lot_area": "", "pluto_bld_area": "",
+            "pluto_res_area": "", "pluto_units_total": "", "pluto_year_built": "",
+            "pluto_zoning": "", "pluto_far": "", "pluto_land_use": "", "pluto_owner": "",
+        })
+
+    co_projects.sort(key=lambda p: p["latest_event_date"], reverse=True)
+
+    return projects + co_projects
 
 
 # ---------------------------------------------------------------------------

@@ -717,6 +717,73 @@ if filtered.empty:
     st.stop()
 
 # ---------------------------------------------------------------------------
+# RECENTLY LAUNCHED SECTION — Certificate of Occupancy buildings
+# ---------------------------------------------------------------------------
+
+co_projects = [p for p in projects if p.get("source_dataset") == "DOB Certificate of Occupancy"]
+
+if co_projects:
+    st.markdown("""
+    <div style="background:#1a1714;border-radius:2px;padding:1.25rem 1.5rem;margin-bottom:1rem;">
+      <div style="font-size:0.65rem;font-weight:600;letter-spacing:0.18em;
+                  text-transform:uppercase;color:#c4b09a;margin-bottom:0.4rem;">
+        Recently Launched
+      </div>
+      <div style="font-family:'Cormorant Garamond',Georgia,serif;font-size:1.3rem;
+                  font-weight:300;color:#f5f0e8;margin-bottom:0.25rem;">
+        New Residential Buildings · Certificate of Occupancy Issued
+      </div>
+      <div style="font-size:0.72rem;color:#8c7d6e;">
+        Buildings that completed construction and received a CO in the last 12 months
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    co_cols = st.columns(3)
+    for i, p in enumerate(co_projects[:9]):
+        with co_cols[i % 3]:
+            hood  = p.get("neighborhood", "") or "Manhattan"
+            dev   = p.get("developer_name", "") or "—"
+            date  = p.get("latest_event_date", "") or "—"
+            mlink = maps_url(p["address"])
+            ostat = outreach_map.get(p["address"], {}).get("status", "New")
+
+            st.markdown(
+                f'<div style="border:1px solid #e0d6cc;border-radius:2px;'
+                f'padding:1rem 1.1rem;background:#fff;margin-bottom:0.75rem;">'
+                f'<div style="font-size:0.6rem;letter-spacing:0.14em;text-transform:uppercase;'
+                f'color:#8c7d6e;margin-bottom:4px;">{hood}</div>'
+                f'<div style="font-family:Cormorant Garamond,Georgia,serif;font-size:1rem;'
+                f'color:#1a1714;margin-bottom:8px;font-weight:400;">{p["address"]}</div>'
+                f'<div style="margin-bottom:8px;">'
+                f'<span style="font-size:0.6rem;font-weight:600;padding:2px 8px;'
+                f'letter-spacing:0.08em;text-transform:uppercase;background:#a89060;'
+                f'color:#fff;border-radius:1px;">CO Issued</span>'
+                f'</div>'
+                f'<div style="font-size:0.7rem;color:#8c7d6e;line-height:1.7;'
+                f'border-top:1px solid #e0d6cc;padding-top:7px;">'
+                f'&#128100; {dev}<br>'
+                f'CO issued: {date}<br>'
+                f'<a href="{mlink}" target="_blank" style="color:#a89060;'
+                f'text-decoration:none;font-weight:500;">&#128205; Map</a>'
+                f'</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+            safe_key = "co_" + p["address"].replace(" ", "_").replace("/", "_")
+            already_listed = ostat == "On Viewing List"
+            btn_label = "★ Remove from List" if already_listed else "＋ Add to List"
+            if st.button(btn_label, key=f"vl_{safe_key}", use_container_width=True):
+                existing = outreach_map.get(p["address"], {})
+                new_s = "New" if already_listed else "On Viewing List"
+                save_outreach(p["address"], new_s, existing.get("email", ""), existing.get("notes", ""))
+                st.session_state["outreach_map"][p["address"]] = {**existing, "status": new_s}
+                st.rerun()
+
+    st.divider()
+
+# ---------------------------------------------------------------------------
 # VIEW TOGGLE — two buttons, no radio
 # ---------------------------------------------------------------------------
 
